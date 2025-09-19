@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,15 +12,37 @@ import {
   TrendingUpIcon,
   ZapIcon,
   EyeIcon,
-  BrainIcon
+  BrainIcon,
+  CameraIcon
 } from "lucide-react";
-import aiAnalysis from "@/assets/ai-analysis.jpg";
+
+interface TrackingPoint {
+  x: number;
+  y: number;
+  confidence: number;
+  label: string;
+}
+
+interface PerformanceMetrics {
+  jumpHeight?: number;
+  repCount?: number;
+  speed?: number;
+  formScore?: number;
+}
 
 export const AIAnalysis = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
   const [currentTest, setCurrentTest] = useState("vertical-jump");
   const [analysisStatus, setAnalysisStatus] = useState<"idle" | "analyzing" | "complete">("idle");
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [trackingPoints, setTrackingPoints] = useState<TrackingPoint[]>([]);
+  const [metrics, setMetrics] = useState<PerformanceMetrics>({});
+  const [isInitializingCamera, setIsInitializingCamera] = useState(false);
+  
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const animationFrameRef = useRef<number>();
 
   const tests = [
     {
@@ -48,6 +70,143 @@ export const AIAnalysis = () => {
 
   const selectedTest = tests.find(test => test.id === currentTest) || tests[0];
 
+  // Initialize camera
+  const initializeCamera = useCallback(async () => {
+    setIsInitializingCamera(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { 
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: 'user'
+        },
+        audio: false
+      });
+      setCameraStream(stream);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+    } catch (error) {
+      console.error('Error accessing camera:', error);
+    } finally {
+      setIsInitializingCamera(false);
+    }
+  }, []);
+
+  // AI tracking function
+  const performAITracking = useCallback(() => {
+    if (!videoRef.current || !canvasRef.current || !isRecording) return;
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    
+    if (!ctx) return;
+
+    // Set canvas size to match video
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    
+    // Draw video frame
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    
+    // Simulate AI tracking based on test type
+    const newTrackingPoints: TrackingPoint[] = [];
+    const newMetrics: PerformanceMetrics = {};
+    
+    switch (currentTest) {
+      case 'vertical-jump':
+        // Simulate jump height detection
+        const jumpHeight = Math.random() * 100 + 50;
+        newMetrics.jumpHeight = Math.round(jumpHeight);
+        newTrackingPoints.push({
+          x: canvas.width * 0.5,
+          y: canvas.height * 0.3,
+          confidence: 0.95,
+          label: 'Peak Height'
+        });
+        break;
+        
+      case 'sit-ups':
+        // Simulate rep counting
+        const repCount = Math.floor(Math.random() * 5) + 1;
+        newMetrics.repCount = repCount;
+        newTrackingPoints.push({
+          x: canvas.width * 0.5,
+          y: canvas.height * 0.5,
+          confidence: 0.88,
+          label: 'Body Center'
+        });
+        break;
+        
+      case 'sprint-test':
+        // Simulate speed tracking
+        const speed = Math.random() * 10 + 15;
+        newMetrics.speed = Math.round(speed * 10) / 10;
+        newTrackingPoints.push({
+          x: canvas.width * 0.7,
+          y: canvas.height * 0.6,
+          confidence: 0.92,
+          label: 'Runner'
+        });
+        break;
+    }
+    
+    // Draw tracking points
+    ctx.fillStyle = '#10b981';
+    ctx.strokeStyle = '#10b981';
+    ctx.lineWidth = 2;
+    
+    newTrackingPoints.forEach(point => {
+      // Draw circle
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, 8, 0, 2 * Math.PI);
+      ctx.fill();
+      
+      // Draw label
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '14px Arial';
+      ctx.fillText(point.label, point.x + 15, point.y - 10);
+      
+      // Draw confidence
+      ctx.fillStyle = '#10b981';
+      ctx.font = '12px Arial';
+      ctx.fillText(`${Math.round(point.confidence * 100)}%`, point.x + 15, point.y + 5);
+    });
+    
+    setTrackingPoints(newTrackingPoints);
+    setMetrics(newMetrics);
+    
+    // Continue tracking
+    if (isRecording) {
+      animationFrameRef.current = requestAnimationFrame(performAITracking);
+    }
+  }, [isRecording, currentTest]);
+
+  // Start AI tracking when recording starts
+  useEffect(() => {
+    if (isRecording && cameraStream) {
+      performAITracking();
+    } else if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+    }
+    
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, [isRecording, cameraStream, performAITracking]);
+
+  // Cleanup camera on unmount
+  useEffect(() => {
+    return () => {
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [cameraStream]);
+
   // Simulate AI analysis progress
   useEffect(() => {
     if (analysisStatus === "analyzing") {
@@ -65,7 +224,12 @@ export const AIAnalysis = () => {
     }
   }, [analysisStatus]);
 
-  const startAnalysis = () => {
+  const startAnalysis = async () => {
+    // Initialize camera if not already done
+    if (!cameraStream) {
+      await initializeCamera();
+    }
+    
     setAnalysisStatus("analyzing");
     setAnalysisProgress(0);
     setIsRecording(true);
@@ -76,6 +240,11 @@ export const AIAnalysis = () => {
     if (analysisStatus === "analyzing" && analysisProgress < 100) {
       setAnalysisProgress(100);
       setAnalysisStatus("complete");
+    }
+    
+    // Stop animation frame
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
     }
   };
 
@@ -170,13 +339,83 @@ export const AIAnalysis = () => {
               </CardHeader>
               
               <CardContent className="space-y-6">
-                {/* Video Area */}
+                {/* Live Video Area */}
                 <div className="relative aspect-video bg-surface rounded-lg overflow-hidden">
-                  <img 
-                    src={aiAnalysis} 
-                    alt="AI Analysis Interface"
+                  {/* Live Video Feed */}
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    muted
                     className="w-full h-full object-cover"
                   />
+                  
+                  {/* AI Tracking Canvas Overlay */}
+                  <canvas
+                    ref={canvasRef}
+                    className="absolute inset-0 w-full h-full pointer-events-none"
+                    style={{ mixBlendMode: 'multiply' }}
+                  />
+                  
+                  {/* Camera Initialization Overlay */}
+                  {!cameraStream && !isInitializingCamera && (
+                    <div className="absolute inset-0 bg-surface/90 flex items-center justify-center">
+                      <div className="text-center space-y-4">
+                        <CameraIcon className="w-16 h-16 text-muted-foreground mx-auto" />
+                        <h3 className="text-lg font-bold">Camera Access Required</h3>
+                        <p className="text-sm text-muted-foreground">
+                          Click "Start Test" to enable camera for AI tracking
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Loading Overlay */}
+                  {isInitializingCamera && (
+                    <div className="absolute inset-0 bg-surface/90 flex items-center justify-center">
+                      <div className="text-center space-y-4">
+                        <div className="w-16 h-16 bg-gradient-energy rounded-full animate-pulse mx-auto" />
+                        <h3 className="text-lg font-bold">Initializing Camera...</h3>
+                        <p className="text-sm text-muted-foreground">Please allow camera access</p>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Live Tracking Metrics Overlay */}
+                  {isRecording && trackingPoints.length > 0 && (
+                    <div className="absolute top-4 left-4 bg-background/80 rounded-lg p-3 space-y-2">
+                      <div className="flex items-center space-x-2">
+                        <div className="w-2 h-2 bg-success rounded-full animate-pulse" />
+                        <span className="text-sm font-semibold text-success">AI Tracking Active</span>
+                      </div>
+                      {metrics.jumpHeight && (
+                        <div className="text-sm">
+                          <span className="text-muted-foreground">Jump Height: </span>
+                          <span className="font-bold text-primary">{metrics.jumpHeight}cm</span>
+                        </div>
+                      )}
+                      {metrics.repCount && (
+                        <div className="text-sm">
+                          <span className="text-muted-foreground">Reps: </span>
+                          <span className="font-bold text-primary">{metrics.repCount}</span>
+                        </div>
+                      )}
+                      {metrics.speed && (
+                        <div className="text-sm">
+                          <span className="text-muted-foreground">Speed: </span>
+                          <span className="font-bold text-primary">{metrics.speed} km/h</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
+                  {/* Recording Indicator */}
+                  {isRecording && (
+                    <div className="absolute top-4 right-4 flex items-center space-x-2 bg-danger/20 text-danger px-3 py-2 rounded-lg">
+                      <div className="w-2 h-2 bg-danger rounded-full animate-pulse" />
+                      <span className="text-sm font-semibold">LIVE</span>
+                    </div>
+                  )}
                   
                   {/* Recording Overlay */}
                   {isRecording && (
